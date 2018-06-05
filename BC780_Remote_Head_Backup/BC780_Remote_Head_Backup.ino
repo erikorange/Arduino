@@ -1,0 +1,385 @@
+#include <Debounce.h>
+#include <LiquidCrystal.h>
+
+// LCD rows
+const int LCDROW1 = 0;
+const int LCDROW2 = 1;
+const int LCDROW3 = 2;
+const int LCDROW4 = 3;
+
+// I/O pins
+const int BUTTON_SCAN = 7;
+const int BACKLIGHT = 13;
+
+// BC780 serial commands that return OK as response
+const int CMD_SCAN = 1;      // scan mode
+const int CMD_MAN = 2;       // manual mode
+const int CMD_UP = 3;        // channel Up
+const int CMD_DOWN = 4;      // channel Down
+const int CMD_SQNOTIFY = 5;  // squelch notify
+const int CMD_SQDENOTIFY = 6;  // squelch notify
+
+
+// Debounce parameter in ms
+const int DEBOUNCE_TIME = 50;
+
+
+
+// Connections:
+// rs (LCD pin 4) to Arduino pin 12
+// rw (LCD pin 5) to Arduino pin 11
+// enable (LCD pin 6) to Arduino pin 10
+// LCD pin 15 to Arduino pin 13
+// LCD pins d4, d5, d6, d7 to Arduino pins 5, 4, 3, 2
+LiquidCrystal lcd(12, 11, 10, 5, 4, 3, 2);
+
+void setup()
+{
+  // Configure display
+  pinMode(BACKLIGHT, OUTPUT);
+  digitalWrite(BACKLIGHT, HIGH);
+  lcd.begin(20, 4);              // define as a 20x4 LCD
+  lcd.clear();
+  
+  // Display opening title
+  DisplayTitle();
+  
+  // Configure inputs
+  pinMode(BUTTON_SCAN, INPUT);
+  digitalWrite(BUTTON_SCAN, HIGH);       // turn on the built in pull-up resistor
+  Debounce scanButton(BUTTON_SCAN, DEBOUNCE_TIME);
+  
+  // Configure serial port
+  Serial.begin(19200);
+}
+
+
+void loop()
+{
+  char buffer[128];
+  char freqInfoBuffer[128];
+  char channelTagBuffer[128];
+  char bankTagBuffer[128];
+  boolean flag;
+  
+  
+  //SendCommand(CMD_SQNOTIFY);  // make the BC780 send a +/- for squelch open/closed
+  SendCommand(CMD_SQDENOTIFY);
+  lcd.clear();
+  DisplayScanMessage();
+  SendCommand(CMD_SCAN);      // start scanning
+ 
+  while (true)
+  {
+    if (InScanMode())
+    {
+      DisplayScanMessage();
+    }
+    else
+    {
+      DisplayManualMessage();
+    }
+  }
+  
+  
+  while (true)
+  { 
+    if (ReadResponse(buffer, 2))  // we got a + or a - from the scanner
+    //if (GetResponse(buffer))  // we got a + or a - from the scanner
+    {
+      if (buffer[0] == '+')    // squelch is now open
+      {
+      
+        // TODO:  check for a - in case of a quick squelch close, at all points
+      
+        delay(150);               // give the scanner time to actually switch to manual mode
+        
+        // get the frequency/mode/channel
+        Serial.print("MA\r");
+        do
+        {
+          flag = ReadResponse(freqInfoBuffer, 35);
+        }
+        while (!flag);
+        ClearLCDLine(LCDROW2);    // clear the "SCANNING" line
+        DisplayChannelNum(freqInfoBuffer, LCDROW1);
+        DisplayFrequency(freqInfoBuffer, LCDROW2);
+        
+          
+          
+        // get the channel tag
+        ClearLCDLine(LCDROW3);
+        Serial.print("LCD LINE1\r");
+        do
+        {
+          flag = ReadResponse(channelTagBuffer, 43);
+        }
+        while (!flag);
+        DisplayTagBuffer(channelTagBuffer, LCDROW3);
+        
+        
+        // get the bank tag
+        ClearLCDLine(LCDROW4);
+        Serial.print("LCD LINE2\r");
+        do
+        {
+          flag = ReadResponse(bankTagBuffer, 43);
+        }
+        while (!flag);
+        DisplayTagBuffer(bankTagBuffer, LCDROW4);
+      }
+      
+      else if (buffer[0] == '-')
+      {
+        delay(2000);  // BC780 delay time
+        ClearLCDLine(LCDROW1);
+        DisplayScanMessage();
+        ClearLCDLine(LCDROW3);
+        ClearLCDLine(LCDROW4);
+      }
+
+    }  // looking for + or -
+    
+  }   // while loop
+  
+}
+
+
+// if (deb.checkInput() == HIGH)
+
+
+boolean GetResponse(char buffer[])
+{
+int numBytes;
+int idx;
+char theChar;
+
+  numBytes = Serial.available();
+  if (numBytes == 0)
+  {
+    return false;
+  }
+  
+  // keep reading until we hit a carriage return
+  idx = 0;
+  do
+  {
+    theChar = Serial.read();
+    buffer[idx++] = theChar;
+  } while (theChar != '\r');
+  
+  return true;
+}
+
+
+boolean ReadResponse(char buffer[], int minBytes)
+{
+int idx;
+
+    ClearLCDLine(LCDROW1);
+    lcd.setCursor(0, LCDROW1);
+    lcd.print("B:");
+    lcd.setCursor(2, LCDROW1);
+    lcd.print(Serial.available());
+    lcd.setCursor(10, LCDROW1);
+    lcd.print("M:");
+    lcd.setCursor(12, LCDROW1);
+    lcd.print(minBytes);
+    
+  if (Serial.available() < minBytes)
+  {
+    return false;
+  }
+  else
+  {
+    idx = 0;
+    while (Serial.available() > 0)
+    {
+      buffer[idx++] = Serial.read();
+    }
+    buffer[idx] = 0;
+    return true;
+  }
+}
+
+
+boolean InScanMode()
+{
+  char buffer[128];
+  boolean flag;
+  int idx;
+  
+  
+  Serial.print("SQ\r");
+  do
+  {
+    flag = ReadResponse(buffer, 2);
+  }
+  while (!flag);
+ 
+  if (buffer[0] == '-')
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+void SendCommand(int cmd)
+{
+  char buffer[128];
+  boolean flag;
+  
+  // send the command
+  switch (cmd)
+  {
+    case CMD_SCAN:
+      Serial.print("KEY00\r");
+      break;
+      
+    case CMD_MAN:
+      Serial.print("KEY01\r");
+      break;
+
+    case CMD_UP:
+      Serial.print("KEY07\r");
+      break;
+      
+    case CMD_DOWN:
+      Serial.print("KEY08\r");
+      break;
+      
+    case CMD_SQNOTIFY:
+      Serial.print("QUN\r");
+      break;
+      
+    case CMD_SQDENOTIFY:
+      Serial.print("QUF\r");
+      break;
+  }
+
+  // now get the data (OK<cr>), which we will discard
+  do
+  {
+    flag = ReadResponse(buffer, 3);
+  }
+  while (!flag);
+   
+}
+
+
+//
+// LCD functions
+//
+
+// Display the "Scanning" message
+void DisplayScanMessage()
+{
+  ClearLCDLine(LCDROW2);
+  lcd.setCursor(6, LCDROW2);
+  lcd.print("SCANNING");
+  return;
+}
+
+void DisplayManualMessage()
+{
+  ClearLCDLine(LCDROW2);
+  lcd.setCursor(7, LCDROW2);
+  lcd.print("MANUAL");
+  return;
+}
+
+// Clear the specified line of the LCD
+void ClearLCDLine(int line)
+{
+  lcd.setCursor(0, line);
+  lcd.print("                    ");
+  return;
+}
+
+// Display the opening title
+void DisplayTitle()
+{
+  lcd.setCursor(5, LCDROW1);
+  lcd.print("BC-780 XLT");
+  lcd.setCursor(4, LCDROW2);
+  lcd.print("Remote  Head");
+  lcd.setCursor(2, LCDROW3);
+  lcd.print("(c) Erik Orange");
+  lcd.setCursor(7, LCDROW4);
+  lcd.print("KA3FYU");
+  delay(3000);
+}
+
+// Display the channel tag, or bank tag, on the specified LCD line
+void DisplayTagBuffer(char buffer[], int lcdLine)
+{
+  int idx;
+  
+  ClearLCDLine(lcdLine);
+  for (idx=0; idx<16; idx++)
+  {
+    lcd.setCursor(idx, lcdLine);
+    lcd.print(buffer[idx+7]);
+  }
+  return;
+}
+
+// Display the frequency info on the specified LCD line
+void DisplayFrequency(char buffer[], int lcdLine)
+{
+  int idx;
+  int dispIdx;
+  
+  ClearLCDLine(lcdLine);
+ 
+  // display the freq
+  dispIdx = 0;
+  for (idx=0; idx<8; idx++)
+  {
+    if (idx == 4)
+    {
+      lcd.setCursor(dispIdx++, lcdLine);
+      lcd.print(".");
+    }
+    
+    lcd.setCursor(dispIdx++, lcdLine);
+    if (idx == 0 && buffer[idx+6] == '0')
+    {
+      lcd.print(" ");  // skip leading zero
+    }
+    else
+    {
+      lcd.print(buffer[idx+6]);
+    }
+  }
+  
+  lcd.setCursor(++dispIdx, lcdLine);
+  lcd.print("AM");
+}
+
+void DisplayChannelNum(char buffer[], int lcdLine)
+{
+  int idx;
+  int dispIdx;
+  
+  ClearLCDLine(lcdLine);
+  
+  // display the channel number
+  dispIdx = 0;
+  for (idx=0; idx<3; idx++)
+  {
+    lcd.setCursor(dispIdx++, lcdLine);
+    if (idx == 0 && buffer[idx+1] == '0')
+    {
+      lcd.print(" ");  // skip leading zero
+    }
+    else
+    {
+      lcd.print(buffer[idx+1]);
+    }
+  }
+  return;
+}
